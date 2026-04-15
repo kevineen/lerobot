@@ -1,0 +1,117 @@
+# {{ report.meta.title }}
+
+{% if report.meta.authors is defined and report.meta.authors %}
+**著者 (Authors):** {% if report.meta.authors is string %}{{ report.meta.authors }}{% else %}{{ report.meta.authors | join(', ') }}{% endif %}
+
+{% endif %}
+{% if report.meta.date is defined and report.meta.date %}
+**日付 (Date):** {{ report.meta.date }}
+
+{% endif %}
+{% if report.meta.keywords is defined and report.meta.keywords %}
+**キーワード (Keywords):** {% if report.meta.keywords is string %}{{ report.meta.keywords }}{% else %}{{ report.meta.keywords | join(', ') }}{% endif %}
+
+{% endif %}
+---
+
+## 要旨 (Abstract)
+
+{{ report.abstract | default('', true) }}
+
+## はじめに (Introduction)
+
+{{ report.introduction | default('', true) }}
+
+## システム構成・材料 (System setup and materials)
+
+{% set system = report.system | default({}, true) %}
+{% if system.hardware is defined and system.hardware %}
+### ハードウェア (Hardware)
+{% if system.hardware is string %}
+{{ system.hardware }}
+{% else %}
+{% for item in system.hardware %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if system.software is defined and system.software %}
+### ソフトウェア (Software)
+{% if system.software is string %}
+{{ system.software }}
+{% else %}
+{% for item in system.software %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if system.network is defined and system.network %}
+### ネットワーク (Network)
+{{ system.network }}
+{% endif %}
+
+## 方法・実験プロトコル (Methods and protocol)
+
+{{ report.methods_protocol | default('', true) }}
+
+{% if report.experiments is defined and report.experiments %}
+### 実験設計の詳細 (Experimental design)
+{{ report.experiments.description | default('', true) }}
+{% if report.experiments.steps is defined and report.experiments.steps %}
+{% for step in report.experiments.steps %}
+{{ loop.index }}. {{ step }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+## 実験結果 (Results)
+
+{% if report.results is defined and report.results.tables %}
+{% for table in report.results.tables %}
+### {{ table.caption | default('表', true) }}
+
+| 指標 (Metric) | 値 (Value) | 単位 (Unit) | 備考 (Notes) |
+| --- | --- | --- | --- |
+{% for row in table.rows | default([], true) %}
+| {{ row.metric | default('', true) }} | {{ row.value | default('', true) }} | {{ row.unit | default('', true) }} | {{ row.notes | default('', true) }} |
+{% endfor %}
+
+{% endfor %}
+{% else %}
+*(結果表は YAML の `results.tables` に記載してください。)*
+{% endif %}
+
+{% if report.figures is defined and report.figures %}
+## 図 (Figures)
+{% for fig in report.figures %}
+### {{ fig.caption | default('図', true) }}
+{% if fig.path is defined and fig.path %}
+![]({{ fig.path }})
+{% endif %}
+{% endfor %}
+{% endif %}
+
+## 統合評価 (Integration and evaluation)
+
+{{ report.integration_evaluation | default('', true) }}
+
+## 考察・リスク (Discussion and risks)
+
+{{ report.discussion_risks | default('', true) }}
+
+## 結論 (Conclusion)
+
+{{ report.conclusion | default('', true) }}
+
+{% if report.references is defined and report.references %}
+## 参考文献 (References)
+{% for ref in report.references %}
+{% if ref.url is defined and ref.url %}
+- {{ ref.title | default('Reference', true) }}: {{ ref.url }}
+{% else %}
+- {{ ref.title | default(ref, true) }}
+{% endif %}
+{% endfor %}
+{% endif %}
