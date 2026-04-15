@@ -176,3 +176,9 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# SO-101 trainswap: root pattern `env/` would ignore experiments/so101_trainswap/env/
+!/experiments/so101_trainswap/env/
+!/experiments/so101_trainswap/env/*.example
+experiments/so101_trainswap/env/wsl.env
+experiments/so101_trainswap/env/pi.env
