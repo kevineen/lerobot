@@ -166,6 +166,16 @@ wandb/
 data/
 outputs/
 
+# Local large artifacts (avoid accidental commits)
+*.pkl
+ckpt_*
+image_path_v2/
+ur5e/
+robotiq_2f_85/
+bowl/
+*.zip
+tmp.jpg
+
 # Translations
 *.mo
 *.pot
