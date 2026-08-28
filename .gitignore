@@ -176,3 +176,6 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# Local eval outputs (lerobot-eval --output_dir)
+eval_logs/
