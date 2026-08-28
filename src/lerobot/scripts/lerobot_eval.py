@@ -787,6 +787,7 @@ def eval_main(cfg: EvalPipelineConfig):
     videos_dir = None if cfg.eval.recording else Path(cfg.output_dir) / "videos"
 
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
+        progress_path = Path(cfg.output_dir) / "eval_info.json"
         info = eval_policy_all(
             envs=envs,
             policy=policy,
@@ -804,6 +805,8 @@ def eval_main(cfg: EvalPipelineConfig):
             env_features=cfg.env.features if cfg.eval.recording else None,
             recording_repo_id=cfg.eval.recording_repo_id,
             recording_private=cfg.eval.recording_private,
+            # 各タスク完了ごとに同じパスへ途中経過を書く（ブラウザの評価モニター用）
+            progress_path=progress_path,
         )
         logger.info("Overall Aggregated Metrics:")
         logger.info(info["overall"])
@@ -815,9 +818,8 @@ def eval_main(cfg: EvalPipelineConfig):
     # Close all vec envs
     close_envs(envs)
 
-    # Save info
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
-        json.dump(info, f, indent=2)
+    # 最終スナップショットを確定（途中書き込みと同じスキーマ）
+    write_eval_info(Path(cfg.output_dir) / "eval_info.json", info)
 
     logging.info("End of eval")
 
@@ -832,6 +834,85 @@ class TaskMetrics(TypedDict):
 
 
 ACC_KEYS = ("sum_rewards", "max_rewards", "successes", "video_paths", "predicted_video_paths")
+
+
+def _agg_from_list(xs: list) -> float:
+    """Mean of a metric list; empty → NaN（従来の集約と同じ）。"""
+    if not xs:
+        return float("nan")
+    arr = np.array(xs, dtype=float)
+    return float(np.nanmean(arr))
+
+
+def _jsonable(value: Any) -> Any:
+    """numpy / Path / NaN を json.dump 可能な値に落とす。"""
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+        return None
+    return value
+
+
+def build_eval_info(
+    *,
+    per_task_infos: list[dict],
+    group_acc: dict[str, dict[str, list]],
+    overall: dict[str, list],
+    start_t: float,
+    total_tasks: int,
+    status: str,
+) -> dict:
+    """eval_info.json のペイロード（集約 + 進捗フィールド）を組み立てる。"""
+    groups_aggregated: dict[str, dict] = {}
+    for group, acc in group_acc.items():
+        groups_aggregated[group] = {
+            "avg_sum_reward": _agg_from_list(acc["sum_rewards"]),
+            "avg_max_reward": _agg_from_list(acc["max_rewards"]),
+            "pc_success": _agg_from_list(acc["successes"]) * 100 if acc["successes"] else float("nan"),
+            "n_episodes": len(acc["sum_rewards"]),
+            "video_paths": list(acc["video_paths"]),
+            "predicted_video_paths": list(acc["predicted_video_paths"]),
+        }
+
+    n_eps = len(overall["sum_rewards"])
+    elapsed = time.time() - start_t
+    overall_agg = {
+        "avg_sum_reward": _agg_from_list(overall["sum_rewards"]),
+        "avg_max_reward": _agg_from_list(overall["max_rewards"]),
+        "pc_success": _agg_from_list(overall["successes"]) * 100 if overall["successes"] else float("nan"),
+        "n_episodes": n_eps,
+        "eval_s": elapsed,
+        "eval_ep_s": elapsed / max(1, n_eps),
+        "video_paths": list(overall["video_paths"]),
+        "predicted_video_paths": list(overall["predicted_video_paths"]),
+    }
+
+    return {
+        "per_task": list(per_task_infos),
+        "per_group": groups_aggregated,
+        "overall": overall_agg,
+        # ブラウザ側が実行中/完了を区別し、進捗バーを出すためのフィールド
+        "status": status,
+        "completed_tasks": len(per_task_infos),
+        "total_tasks": total_tasks,
+    }
+
+
+def write_eval_info(path: Path, info: dict) -> None:
+    """部分的な JSON を読ませないよう、一時ファイル経由で原子的に書き込む。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(_jsonable(info), f, indent=2)
+    tmp.replace(path)
 
 
 def eval_one(
@@ -963,6 +1044,7 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
+    progress_path: Path | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -970,6 +1052,9 @@ def eval_policy_all(
     accumulates per-group and overall statistics, and returns the same aggregate metrics
     schema as the single-env evaluator (avg_sum_reward / avg_max_reward / pc_success / timings)
     plus per-task infos.
+
+    progress_path を渡すと、各タスク完了後に eval_info.json 相当を上書きする。
+    学習中の中間 eval では渡さない（checkpoints 配下を汚さないため）。
     """
     start_t = time.time()
 
@@ -1024,6 +1109,20 @@ def eval_policy_all(
         recording_private=recording_private,
     )
 
+    def _snapshot(status: str) -> dict:
+        """現時点の集約を組み立て、必要なら eval_info.json へ途中書き込みする。"""
+        info = build_eval_info(
+            per_task_infos=per_task_infos,
+            group_acc=group_acc,
+            overall=overall,
+            start_t=start_t,
+            total_tasks=len(tasks),
+            status=status,
+        )
+        if progress_path is not None:
+            write_eval_info(progress_path, info)
+        return info
+
     # Set the shared policy's mode before launching any workers. Restoring it
     # inside individual tasks would let one task enable training mode while
     # another task is still evaluating.
@@ -1041,6 +1140,8 @@ def eval_policy_all(
                     tg, tid, metrics = task_runner(task_group, task_id, env)
                     _accumulate_to(tg, metrics)
                     per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+                    # 1タスク終わるたびに進捗をディスクへ出す（eval モニターが拾う）
+                    _snapshot("running")
                 finally:
                     env.close()
                     # Prefetch next task's workers *after* closing current env to prevent
@@ -1062,47 +1163,13 @@ def eval_policy_all(
                         tg, tid, metrics = fut.result()
                         _accumulate_to(tg, metrics)
                         per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+                        _snapshot("running")
                     finally:
                         env.close()
     finally:
         policy.train(was_training)
 
-    # compute aggregated metrics helper (robust to lists/scalars)
-    def _agg_from_list(xs):
-        if not xs:
-            return float("nan")
-        arr = np.array(xs, dtype=float)
-        return float(np.nanmean(arr))
-
-    # compute per-group aggregates
-    groups_aggregated = {}
-    for group, acc in group_acc.items():
-        groups_aggregated[group] = {
-            "avg_sum_reward": _agg_from_list(acc["sum_rewards"]),
-            "avg_max_reward": _agg_from_list(acc["max_rewards"]),
-            "pc_success": _agg_from_list(acc["successes"]) * 100 if acc["successes"] else float("nan"),
-            "n_episodes": len(acc["sum_rewards"]),
-            "video_paths": list(acc["video_paths"]),
-            "predicted_video_paths": list(acc["predicted_video_paths"]),
-        }
-
-    # overall aggregates
-    overall_agg = {
-        "avg_sum_reward": _agg_from_list(overall["sum_rewards"]),
-        "avg_max_reward": _agg_from_list(overall["max_rewards"]),
-        "pc_success": _agg_from_list(overall["successes"]) * 100 if overall["successes"] else float("nan"),
-        "n_episodes": len(overall["sum_rewards"]),
-        "eval_s": time.time() - start_t,
-        "eval_ep_s": (time.time() - start_t) / max(1, len(overall["sum_rewards"])),
-        "video_paths": list(overall["video_paths"]),
-        "predicted_video_paths": list(overall["predicted_video_paths"]),
-    }
-
-    return {
-        "per_task": per_task_infos,
-        "per_group": groups_aggregated,
-        "overall": overall_agg,
-    }
+    return _snapshot("finished")
 
 
 def main():
