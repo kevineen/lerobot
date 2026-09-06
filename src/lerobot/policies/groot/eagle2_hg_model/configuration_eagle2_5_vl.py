@@ -49,6 +49,7 @@ class Eagle25VLConfig(PretrainedConfig):
         max_dynamic_tiles=6,
         mlp_checkpoint=False,
         initializer_range=0.02,
+        # Default matches NVIDIA GR00T checkpoints. EagleBackbone overrides to SDPA on ROCm.
         _attn_implementation="flash_attention_2",
         _attn_implementation_autoset=False,
         llm_config=None,

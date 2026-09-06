@@ -23,6 +23,7 @@ import torch
 from datasets import load_dataset
 
 from lerobot.utils.constants import HF_LEROBOT_HOME, LOOKAHEAD_BACKTRACKTABLE, LOOKBACK_BACKTRACKTABLE
+from lerobot.utils.import_utils import get_safe_default_codec, torchcodec_is_usable
 
 from .dataset_metadata import CODEBASE_VERSION, LeRobotDatasetMetadata
 from .feature_utils import get_delta_indices
@@ -33,10 +34,7 @@ from .utils import (
     is_float_in_list,
     safe_shard,
 )
-from .video_utils import (
-    VideoDecoderCache,
-    decode_video_frames_torchcodec,
-)
+from .video_utils import VideoDecoderCache, decode_video_frames
 
 
 class LookBackError(Exception):
@@ -251,6 +249,7 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
         seed: int = 42,
         rng: np.random.Generator | None = None,
         shuffle: bool = True,
+        video_backend: str | None = None,
     ):
         """Initialize a StreamingLeRobotDataset.
 
@@ -271,6 +270,8 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
             seed (int, optional): Reproducibility random seed.
             rng (np.random.Generator | None, optional): Random number generator.
             shuffle (bool, optional): Whether to shuffle the dataset across exhaustions. Defaults to True.
+            video_backend (str | None, optional): Video decoder. Defaults to torchcodec on NVIDIA CUDA
+                when installed, otherwise pyav (ROCm never uses torchcodec).
         """
         super().__init__()
         self.repo_id = repo_id
@@ -285,6 +286,8 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
         self.seed = seed
         self.rng = rng if rng is not None else np.random.default_rng(seed)
         self.shuffle = shuffle
+        # ROCm: get_safe_default_codec() returns pyav and never selects torchcodec.
+        self.video_backend = video_backend if video_backend else get_safe_default_codec()
 
         self.streaming = streaming
         self.buffer_size = buffer_size
@@ -351,7 +354,7 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
     # could be used with a ThreadPoolExecutor to run `make_frame` (especially video decoding)
     # in parallel, feeding a queue from which this iterator will yield processed items.
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
-        if self.video_decoder_cache is None:
+        if self.video_decoder_cache is None and torchcodec_is_usable() and self.video_backend == "torchcodec":
             self.video_decoder_cache = VideoDecoderCache()
 
         # keep the same seed across exhaustions if shuffle is False, otherwise shuffle data across exhaustions
@@ -552,9 +555,7 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
         for video_key, query_ts in query_timestamps.items():
             root = self.meta.url_root if self.streaming and not self.streaming_from_local else self.root
             video_path = f"{root}/{self.meta.get_video_file_path(ep_idx, video_key)}"
-            frames = decode_video_frames_torchcodec(
-                video_path, query_ts, self.tolerance_s, decoder_cache=self.video_decoder_cache
-            )
+            frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
 
             item[video_key] = frames.squeeze(0) if len(query_ts) == 1 else frames
 

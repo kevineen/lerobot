@@ -1,3 +1,40 @@
+# ROCm 学習（学習 PC / Radeon AI PRO R9700 / gfx1201）
+
+構造化した手順は [docs/ROCM.md](docs/ROCM.md)。以下は作業用の短いメモ。
+
+公式 PyPI の `lerobot` は使わない。この fork（`~/robot/lerobot`、origin: kevineen）を editable で入れる。
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot-rocm   # Python 3.12。Isaac 用の leisaac (3.11) とは別
+
+export HF_LEROBOT_HOME=/mnt/shared_hdd/robot/datasets/lerobot
+export WANDB_MODE=disabled
+export TORCH_BLAS_PREFER_HIPBLASLT=0
+
+# llama.cpp と同時に回さない（VRAM 取り合い）
+
+lerobot-train \
+  --policy.type=act \
+  --policy.device=cuda \
+  --policy.push_to_hub=false \
+  --dataset.repo_id=lerobot/pusht \
+  --dataset.video_backend=pyav \
+  --output_dir=/mnt/shared_hdd/robot/models/checkpoints/act-rocm \
+  --steps=50 --batch_size=4 --num_workers=2 \
+  --eval_freq=0 --wandb.enable=false
+```
+
+- torch: `2.11.0+rocm7.14.1`（`torch[device-gfx1201]`）。デバイス名は `cuda`（`rocm` エイリアス可）。
+- 動画: **torchcodec は入れない**（CUDA ABI）。`feat/rocm-train` の native PyAV。
+- groot: `flash-attn` は extra から除外。ROCm は SDPA。
+- スモーク CKPT: `act-rocm-smoke` / `smolvla-rocm-smoke` / `diffusion-rocm-smoke`
+- pi0 は extra まで入る。学習は `google/paligemma-3b-pt-224` が gated なので `huggingface-cli login` とアクセス許可が必要（ROCm の問題ではない）。
+
+`--policy.device=cuda` のままでよい。内部で ROCm と判定してログに出す。
+
+---
+
 # find port
 lerobot-find-port
 

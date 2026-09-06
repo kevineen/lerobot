@@ -104,7 +104,9 @@ class Eagle25VLForConditionalGeneration(Eagle25VLPreTrainedModel, GenerationMixi
             self.vision_model = vision_model
         else:
             if config.vision_config.model_type == "siglip_vision_model":
-                config.vision_config._attn_implementation = "flash_attention_2"
+                # Honor parent attn (flash_attention_2 on NVIDIA CUDA, sdpa on ROCm).
+                attn_impl = getattr(config, "_attn_implementation", None) or "sdpa"
+                config.vision_config._attn_implementation = attn_impl
                 self.vision_model = SiglipVisionModel(config.vision_config)
             else:
                 raise NotImplementedError(f"{config.vision_config.model_type} is not implemented.")
@@ -118,9 +120,17 @@ class Eagle25VLForConditionalGeneration(Eagle25VLPreTrainedModel, GenerationMixi
                 raise NotImplementedError("Phi3 is not implemented.")
                 # self.language_model = Phi3ForCausalLM(config.text_config)
             elif config.text_config.architectures[0] == "Qwen2ForCausalLM":
-                assert config.text_config._attn_implementation == "flash_attention_2", (
-                    f"Qwen2 must use flash_attention_2 but got {config.text_config._attn_implementation}"
-                )
+                # flash_attention_2 is NVIDIA-only. SDPA/eager are valid on ROCm.
+                allowed_attn = {"flash_attention_2", "sdpa", "eager"}
+                text_attn = getattr(config.text_config, "_attn_implementation", None)
+                if text_attn not in allowed_attn:
+                    parent_attn = getattr(config, "_attn_implementation", None) or "sdpa"
+                    config.text_config._attn_implementation = parent_attn
+                    text_attn = parent_attn
+                if text_attn not in allowed_attn:
+                    raise AssertionError(
+                        f"Qwen2 attn must be one of {sorted(allowed_attn)}, got {text_attn}"
+                    )
                 self.language_model = Qwen2ForCausalLM(config.text_config)
             elif config.text_config.architectures[0] == "Qwen3ForCausalLM":
                 self.language_model = Qwen3ForCausalLM(config.text_config)

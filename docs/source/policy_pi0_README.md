@@ -43,6 +43,10 @@ Joints listed in `relative_exclude_joints` (e.g., gripper) are kept absolute.
 
 ### Training example
 
+Tokenizer weights come from gated `google/paligemma-3b-pt-224`. Request access and run `huggingface-cli login` first (a 401 here is not a ROCm bug).
+
+On this fork's ROCm host, keep `--dataset.video_backend=pyav` and `--policy.device=cuda`. See [docs/ROCM.md](../../../../docs/ROCM.md).
+
 ```bash
 python -m lerobot.scripts.lerobot_train \
   --policy.type=pi0 \

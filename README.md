@@ -17,6 +17,9 @@
 
 **LeRobot** aims to provide models, datasets, and tools for real-world robotics in PyTorch. The goal is to lower the barrier to entry so that everyone can contribute to and benefit from shared datasets and pretrained models.
 
+> **This repository is the [kevineen/lerobot](https://github.com/kevineen/lerobot) fork.** ROCm training changes live on `feat/rocm-train` and are **not** sent as PRs to huggingface/lerobot.
+> AMD Radeon (R9700 / gfx1201): see [docs/ROCM.md](docs/ROCM.md). Device type stays `cuda`. Do not install `torchcodec` or `flash-attn` on ROCm.
+
 🤗 A hardware-agnostic, Python-native interface that standardizes control across diverse platforms, from low-cost arms (SO-100) to humanoids.
 
 🤗 A standardized, scalable LeRobotDataset format (Parquet + MP4 or images) hosted on the Hugging Face Hub, enabling efficient storage, streaming and visualization of massive robotic datasets.
@@ -36,6 +39,8 @@ lerobot-info
 
 > [!IMPORTANT]
 > For detailed installation guide, please see the [Installation Documentation](https://huggingface.co/docs/lerobot/installation).
+>
+> This fork on AMD GPUs: [docs/ROCM.md](docs/ROCM.md) (conda `lerobot-rocm`, PyTorch ROCm wheels, `--dataset.video_backend=pyav`).
 
 ## Robots & Control
 
