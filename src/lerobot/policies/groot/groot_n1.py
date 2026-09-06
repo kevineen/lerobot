@@ -42,6 +42,7 @@ except ImportError:
     tree = None
 
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME
+from lerobot.utils.device_utils import apply_attn_implementation, select_attn_implementation
 
 from .action_head.flow_matching_action_head import (
     FlowmatchingActionHead,
@@ -83,6 +84,11 @@ class EagleBackbone(nn.Module):
             print(f"[GROOT] Warning: failed to prepare Eagle cache for backbone: {exc}")
 
         config = AutoConfig.from_pretrained(str(cache_dir), trust_remote_code=True)
+        # Checkpoint JSON often hardcodes flash_attention_2. Override before from_config
+        # so ROCm (and CUDA without flash-attn) uses SDPA instead of crashing on import.
+        attn_impl = select_attn_implementation(allow_flash=use_flash_attention)
+        apply_attn_implementation(config, attn_impl)
+        print(f"[GROOT] Eagle backbone attention: {attn_impl}")
         self.eagle_model = AutoModel.from_config(config, trust_remote_code=True)
 
         if project_to_dim is not None:

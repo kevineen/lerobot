@@ -25,3 +25,7 @@ Code: https://github.com/NVIDIA/Isaac-GR00T
 Blog: https://developer.nvidia.com/isaac/gr00t
 
 Hugging Face Model: https://huggingface.co/nvidia/GR00T-N1.5-3B
+
+## ROCm / this fork
+
+`flash-attn` is NVIDIA CUDA only. `lerobot[groot]` does not install it. On ROCm, Eagle uses SDPA (`select_attn_implementation`). CUDA hosts can `pip install --no-build-isolation "flash-attn>=2.5.9,<3.0.0"`. See [docs/ROCM.md](../../../../docs/ROCM.md).

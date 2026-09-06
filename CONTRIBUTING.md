@@ -4,6 +4,8 @@ Everyone is welcome to contribute, and we value everybody's contribution. Code i
 
 Whichever way you choose to contribute, please be mindful to respect our [code of conduct](https://github.com/huggingface/lerobot/blob/main/CODE_OF_CONDUCT.md) and our [AI policy](https://github.com/huggingface/lerobot/blob/main/AI_POLICY.md).
 
+**This fork (kevineen/lerobot):** ROCm changes on `feat/rocm-train` stay here. Do not open PRs against huggingface/lerobot for them. See [docs/ROCM.md](docs/ROCM.md).
+
 ## Ways to Contribute
 
 You can contribute in many ways:

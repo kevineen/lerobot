@@ -33,7 +33,14 @@ from .constants import (
     REWARD,
 )
 from .decorators import check_if_already_connected, check_if_not_connected
-from .device_utils import auto_select_torch_device, get_safe_torch_device, is_torch_device_available
+from .device_utils import (
+    auto_select_torch_device,
+    canonical_torch_device,
+    get_safe_torch_device,
+    is_rocm,
+    is_torch_device_available,
+    select_attn_implementation,
+)
 from .errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from .import_utils import is_package_available, require_package
 
@@ -51,8 +58,11 @@ __all__ = [
     "REWARD",
     # Device utilities
     "auto_select_torch_device",
+    "canonical_torch_device",
     "get_safe_torch_device",
+    "is_rocm",
     "is_torch_device_available",
+    "select_attn_implementation",
     # Import guards
     "is_package_available",
     "require_package",

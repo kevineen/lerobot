@@ -69,15 +69,41 @@ def is_package_available(
         return package_exists
 
 
+def torchcodec_is_usable() -> bool:
+    """Return True only when torchcodec is installed *and* safe to import.
+
+    PyPI torchcodec wheels are CUDA ABI. Loading them on ROCm PyTorch can crash
+    the process, so this fork never selects torchcodec on HIP builds. Policy on
+    AMD training hosts: do not install torchcodec (no source-build either).
+    NVIDIA CUDA hosts can still ``pip install 'torchcodec>=0.3.0,<0.11.0'``.
+    """
+    from lerobot.utils.device_utils import is_rocm
+
+    if is_rocm():
+        return False
+    return importlib.util.find_spec("torchcodec") is not None
+
+
 def get_safe_default_codec():
     logger = logging.getLogger(__name__)
-    if importlib.util.find_spec("torchcodec"):
+    has_torchcodec = importlib.util.find_spec("torchcodec") is not None
+    if torchcodec_is_usable():
         return "torchcodec"
-    else:
-        logger.warning(
-            "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
-        )
+    from lerobot.utils.device_utils import is_rocm
+
+    if is_rocm():
+        if has_torchcodec:
+            logger.warning(
+                "torchcodec is installed on a ROCm PyTorch build. PyPI wheels are CUDA ABI and "
+                "can crash training; using 'pyav' instead. Uninstall torchcodec on this host."
+            )
+        else:
+            logger.debug("ROCm: default video decoder is 'pyav' (torchcodec is not used).")
         return "pyav"
+    logger.warning(
+        "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
+    )
+    return "pyav"
 
 
 _require_package_cache: dict[str, bool] = {}

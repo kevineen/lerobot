@@ -79,7 +79,7 @@ class GrootPolicy(PreTrainedPolicy):
         1) Download and load pretrained model via GR00TN15.from_pretrained
         2) Align action horizon with data_config if provided
         """
-        # Handle Flash Attention compatibility issues
+        # Skip NVIDIA flash-attn on ROCm; force SDPA before GR00T/Eagle loads.
         self._handle_flash_attention_compatibility()
 
         model = GR00TN15.from_pretrained(
@@ -299,25 +299,33 @@ class GrootPolicy(PreTrainedPolicy):
     # Internal helpers
     # -------------------------
     def _handle_flash_attention_compatibility(self) -> None:
-        """Handle Flash Attention compatibility issues by setting environment variables.
+        """Skip FlashAttention2 on ROCm and fall back to SDPA.
 
-        This addresses the common 'undefined symbol' error that occurs when Flash Attention
-        is compiled against a different PyTorch version than what's currently installed.
+        FlashAttention2 is NVIDIA CUDA only. On HIP/ROCm we never import
+        ``flash_attn`` (CUDA ABI / missing symbols). Transformers then uses
+        SDPA via ``select_attn_implementation``. CUDA hosts still try flash-attn
+        when it is installed, and fall back on import errors.
         """
+        from lerobot.utils.device_utils import is_rocm, select_attn_implementation
 
-        # Set environment variables to handle Flash Attention compatibility
-        # These help with symbol resolution issues
+        attn_impl = select_attn_implementation()
+        if is_rocm() or attn_impl != "flash_attention_2":
+            # Prevent accidental CUDA-extension builds if someone pip-installs flash-attn later.
+            os.environ.setdefault("FLASH_ATTENTION_FORCE_BUILD", "0")
+            os.environ.setdefault("FLASH_ATTENTION_SKIP_CUDA_BUILD", "1")
+            print(f"[GROOT] Using attention implementation '{attn_impl}' (ROCm={is_rocm()}).")
+            print("[GROOT] FlashAttention2 skipped; SDPA/eager fallback is the ROCm path.")
+            return
+
         os.environ.setdefault("FLASH_ATTENTION_FORCE_BUILD", "0")
         os.environ.setdefault("FLASH_ATTENTION_SKIP_CUDA_BUILD", "0")
-
-        # Try to import flash_attn and handle failures gracefully
         try:
             import flash_attn
 
             print(f"[GROOT] Flash Attention version: {flash_attn.__version__}")
         except ImportError as e:
             print(f"[GROOT] Flash Attention not available: {e}")
-            print("[GROOT] Will use fallback attention mechanism")
+            print("[GROOT] Will use SDPA fallback attention")
         except Exception as e:
             if "undefined symbol" in str(e):
                 print(f"[GROOT] Flash Attention compatibility issue detected: {e}")
@@ -325,7 +333,7 @@ class GrootPolicy(PreTrainedPolicy):
                 print("[GROOT] Consider reinstalling Flash Attention with compatible version:")
                 print("  pip uninstall flash-attn")
                 print("  pip install --no-build-isolation flash-attn==2.6.3")
-                print("[GROOT] Continuing with fallback attention mechanism")
+                print("[GROOT] Continuing with SDPA fallback attention")
             else:
                 print(f"[GROOT] Flash Attention error: {e}")
-                print("[GROOT] Continuing with fallback attention mechanism")
+                print("[GROOT] Continuing with SDPA fallback attention")

@@ -37,7 +37,7 @@ import torchvision
 from datasets.features.features import register_feature
 from PIL import Image
 
-from lerobot.utils.import_utils import get_safe_default_codec
+from lerobot.utils.import_utils import get_safe_default_codec, torchcodec_is_usable
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +141,98 @@ def decode_video_frames(
     if backend is None:
         backend = get_safe_default_codec()
     if backend == "torchcodec":
+        if not torchcodec_is_usable():
+            logger.warning(
+                "video_backend='torchcodec' is not usable on this host (ROCm or missing package). "
+                "Falling back to native PyAV."
+            )
+            return decode_video_frames_pyav(video_path, timestamps, tolerance_s)
         return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
-    elif backend in ["pyav", "video_reader"]:
+    elif backend == "pyav":
+        # Native PyAV: ROCm torchvision wheels omit torchvision.io.VideoReader.
+        return decode_video_frames_pyav(video_path, timestamps, tolerance_s)
+    elif backend == "video_reader":
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:
         raise ValueError(f"Unsupported video backend: {backend}")
+
+
+def _select_closest_frames(
+    loaded_frames: list[torch.Tensor],
+    loaded_ts: list[float],
+    timestamps: list[float],
+    tolerance_s: float,
+    video_path: Path | str,
+    backend: str,
+) -> torch.Tensor:
+    """Pick the nearest decoded frames to each query timestamp and return float32 [0, 1] tensors."""
+    query_ts = torch.tensor(timestamps)
+    loaded_ts_t = torch.tensor(loaded_ts)
+    dist = torch.cdist(query_ts[:, None], loaded_ts_t[:, None], p=1)
+    min_, argmin_ = dist.min(1)
+    is_within_tol = min_ < tolerance_s
+    if not is_within_tol.all():
+        raise FrameTimestampError(
+            f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
+            " It means that the closest frame that can be loaded from the video is too far away in time."
+            " This might be due to synchronization issues with timestamps during data collection."
+            " To be safe, we advise to ignore this item during training."
+            f"\nqueried timestamps: {query_ts}"
+            f"\nloaded timestamps: {loaded_ts_t}"
+            f"\nvideo: {video_path}"
+            f"\nbackend: {backend}"
+        )
+    closest_frames = torch.stack([loaded_frames[idx] for idx in argmin_])
+    closest_frames = closest_frames.type(torch.float32) / 255
+    if len(timestamps) != len(closest_frames):
+        raise FrameTimestampError(
+            f"Number of retrieved frames ({len(closest_frames)}) does not match "
+            f"number of queried timestamps ({len(timestamps)})"
+        )
+    return closest_frames
+
+
+def decode_video_frames_pyav(
+    video_path: Path | str,
+    timestamps: list[float],
+    tolerance_s: float,
+    log_loaded_timestamps: bool = False,
+) -> torch.Tensor:
+    """Decode frames with PyAV directly (no torchvision.io.VideoReader).
+
+    AMD ROCm torchvision builds typically lack VideoReader. PyAV is already a
+    LeRobot dependency, so this path keeps dataset training working on Radeon.
+    Output matches the torchvision decoder: float32 CHW in [0, 1].
+    """
+    video_path = str(video_path)
+    first_ts = min(timestamps)
+    last_ts = max(timestamps)
+    loaded_frames: list[torch.Tensor] = []
+    loaded_ts: list[float] = []
+
+    with av.open(video_path) as container:
+        stream = container.streams.video[0]
+        time_base = stream.time_base if stream.time_base is not None else Fraction(1, 1)
+        seek_offset = int(first_ts / time_base)
+        container.seek(seek_offset, stream=stream, any_frame=False, backward=True)
+        for frame in container.decode(stream):
+            if frame.pts is None:
+                continue
+            current_ts = float(frame.pts * time_base)
+            if log_loaded_timestamps:
+                logger.info(f"frame loaded at timestamp={current_ts:.4f}")
+            rgb = frame.to_ndarray(format="rgb24")
+            loaded_frames.append(torch.from_numpy(rgb).permute(2, 0, 1).contiguous())
+            loaded_ts.append(current_ts)
+            if current_ts >= last_ts:
+                break
+
+    if not loaded_frames:
+        raise FrameTimestampError(f"No frames decoded from video: {video_path}")
+
+    return _select_closest_frames(
+        loaded_frames, loaded_ts, timestamps, tolerance_s, video_path, backend="pyav"
+    )
 
 
 def decode_video_frames_torchvision(
@@ -260,12 +347,13 @@ class VideoDecoderCache:
 
     def get_decoder(self, video_path: str):
         """Get a cached decoder or create a new one."""
-        if importlib.util.find_spec("torchcodec"):
+        if torchcodec_is_usable():
             from torchcodec.decoders import VideoDecoder
         else:
             raise ImportError(
-                "'torchcodec' is required but not installed. "
-                "Install it with: pip install 'lerobot[dataset]' (or uv pip install 'lerobot[dataset]')"
+                "'torchcodec' is required but not usable here. "
+                "ROCm hosts: do not install torchcodec (CUDA ABI); use video_backend=pyav. "
+                "NVIDIA CUDA hosts: pip install 'torchcodec>=0.3.0,<0.11.0'"
             )
 
         video_path = str(video_path)
