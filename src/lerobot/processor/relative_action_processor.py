@@ -20,7 +20,7 @@ import torch
 from torch import Tensor
 
 from lerobot.configs import PipelineFeatureType, PolicyFeature
-from lerobot.types import EnvTransition, TransitionKey
+from lerobot.lerobot_types import EnvTransition, TransitionKey
 from lerobot.utils.constants import OBS_STATE
 
 from .delta_action_processor import MapDeltaActionToRobotActionStep, MapTensorToDeltaActionDictStep
@@ -42,7 +42,8 @@ def to_relative_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
 
     Args:
         actions: (B, T, action_dim) or (B, action_dim).
-        state: (B, state_dim). Broadcast across time dimension.
+        state: (B, state_dim), or (B, T_obs, state_dim) for a temporally stacked
+            observation (collapsed to the current frame). Broadcast across time dimension.
         mask: Which dims to convert. Can be shorter than action_dim.
     """
     mask_t = torch.tensor(mask, dtype=actions.dtype, device=actions.device)
@@ -51,6 +52,12 @@ def to_relative_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
     # DeviceProcessorStep moves the transition, so it can be on CPU while actions are on CUDA.
     if state.device != actions.device or state.dtype != actions.dtype:
         state = state.to(device=actions.device, dtype=actions.dtype)
+    # A temporally stacked observation (a policy whose ``observation_delta_indices`` spans several
+    # frames, e.g. VLA-JEPA or LingBot-VA) hands over a (B, T_obs, state_dim) state. The reference
+    # is the CURRENT frame -- delta 0, i.e. index 0 -- so collapse to it and let the offset
+    # broadcast over the action horizon. pi0/pi05 pass a 2D (B, state_dim) state and are unaffected.
+    if state.ndim == 3:
+        state = state[:, 0]
     state_offset = state[..., :dims] * mask_t
     if actions.ndim == 3:
         state_offset = state_offset.unsqueeze(-2)
@@ -64,7 +71,8 @@ def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
 
     Args:
         actions: (B, T, action_dim) or (B, action_dim).
-        state: (B, state_dim). Broadcast across time dimension.
+        state: (B, state_dim), or (B, T_obs, state_dim) for a temporally stacked
+            observation (collapsed to the current frame). Broadcast across time dimension.
         mask: Which dims to convert. Can be shorter than action_dim.
     """
     mask_t = torch.tensor(mask, dtype=actions.dtype, device=actions.device)
@@ -73,6 +81,12 @@ def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
     # DeviceProcessorStep moves the transition, so it can be on CPU while actions are on CUDA.
     if state.device != actions.device or state.dtype != actions.dtype:
         state = state.to(device=actions.device, dtype=actions.dtype)
+    # A temporally stacked observation (a policy whose ``observation_delta_indices`` spans several
+    # frames, e.g. VLA-JEPA or LingBot-VA) hands over a (B, T_obs, state_dim) state. The reference
+    # is the CURRENT frame -- delta 0, i.e. index 0 -- so collapse to it and let the offset
+    # broadcast over the action horizon. pi0/pi05 pass a 2D (B, state_dim) state and are unaffected.
+    if state.ndim == 3:
+        state = state[:, 0]
     state_offset = state[..., :dims] * mask_t
     if actions.ndim == 3:
         state_offset = state_offset.unsqueeze(-2)
@@ -81,7 +95,7 @@ def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
     return actions
 
 
-@ProcessorStepRegistry.register("delta_actions_processor")
+@ProcessorStepRegistry.register("relative_actions_processor")
 @dataclass
 class RelativeActionsProcessorStep(ProcessorStep):
     """Converts absolute actions to relative actions (action -= state) for masked dimensions.
@@ -142,6 +156,13 @@ class RelativeActionsProcessorStep(ProcessorStep):
         new_transition[TransitionKey.ACTION] = to_relative_actions(action, state, mask)
         return new_transition
 
+    def reset(self) -> None:
+        self._last_state = None
+
+    def get_cached_state(self) -> torch.Tensor | None:
+        """Return the cached ``observation.state`` used as the reference point for relative/absolute action conversions."""
+        return self._last_state
+
     def get_config(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -182,7 +203,8 @@ class AbsoluteActionsProcessorStep(ProcessorStep):
                 "but relative_step is None. Ensure relative_step is set when constructing the postprocessor."
             )
 
-        if self.relative_step._last_state is None:
+        cached_state = self.relative_step.get_cached_state()
+        if cached_state is None:
             raise RuntimeError(
                 "AbsoluteActionsProcessorStep requires state from RelativeActionsProcessorStep "
                 "but no state has been cached. Ensure the preprocessor runs before the postprocessor."
@@ -194,9 +216,7 @@ class AbsoluteActionsProcessorStep(ProcessorStep):
             return new_transition
 
         mask = self.relative_step._build_mask(action.shape[-1])
-        new_transition[TransitionKey.ACTION] = to_absolute_actions(
-            action, self.relative_step._last_state, mask
-        )
+        new_transition[TransitionKey.ACTION] = to_absolute_actions(action, cached_state, mask)
         return new_transition
 
     def get_config(self) -> dict[str, Any]:
