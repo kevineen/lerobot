@@ -33,6 +33,7 @@ LeRobot = **datasets + policies + envs + robot control**, unified by a small set
 - **Processors** — small composable transforms between dataset → policy → robot.
 - **Envs** (sim) and **Robots** (real) — same action/observation contract so code swaps cleanly.
 - **CLI** — `lerobot-record`, `lerobot-train`, `lerobot-eval`, `lerobot-teleoperate`, `lerobot-calibrate`, `lerobot-find-port`, `lerobot-setup-motors`, `lerobot-replay`.
+- **Custom experiment CLIs** (this fork) — `lerobot-frs-steering` / `lerobot-frs-dsbc-train` (Flow Reversal Steering, see [`docs/frs_so101.md`](./docs/frs_so101.md)). SayCan/trainswap experiment code now lives in the so101-lab repository (`vendor/lerobot` conventions there).
 
 See [`AGENTS.md`](./AGENTS.md) for repo architecture.
 
