@@ -21,9 +21,14 @@ Verifies on random-init policies (GPU, mirroring the RTC test pattern) that:
 - `reverse_actions` composes with `noise=` exactly like the combined path;
 - reference validation / noise-conflict errors fire.
 
-Heavy: each policy holds a full VLM; requires CUDA and an HF token (PaliGemma
-config download). Run with:
-    pytest tests/policies/pi0_pi05/test_frs.py -v
+Heavy: each policy holds a full VLM (~16 GiB VRAM in fp32, ~9 GiB in bf16);
+requires CUDA and an HF token (PaliGemma config download; cached afterwards).
+Run ONE test per process: a failed test keeps its policy alive in VRAM through
+the failure traceback, so a full-file run cascades into CUDA OOM on 24 GB GPUs:
+    for t in $(pytest --collect-only -q tests/policies/pi0_pi05/test_frs.py \\
+        | sed -n 's/^.*:://p'); do
+        pytest "tests/policies/pi0_pi05/test_frs.py::$t" -v
+    done
 """
 
 import pytest
@@ -68,9 +73,21 @@ def _make_features(config):
 
 
 def _make_stats():
+    # q01=-1 / q99=1 keeps pi0.5's default QUANTILES normalization an identity
+    # map (like mean=0 / std=1), so the model-space reference equals the raw one.
     return {
-        "observation.state": {"mean": torch.zeros(STATE_DIM), "std": torch.ones(STATE_DIM)},
-        "action": {"mean": torch.zeros(ACTION_DIM), "std": torch.ones(ACTION_DIM)},
+        "observation.state": {
+            "mean": torch.zeros(STATE_DIM),
+            "std": torch.ones(STATE_DIM),
+            "q01": -torch.ones(STATE_DIM),
+            "q99": torch.ones(STATE_DIM),
+        },
+        "action": {
+            "mean": torch.zeros(ACTION_DIM),
+            "std": torch.ones(ACTION_DIM),
+            "q01": -torch.ones(ACTION_DIM),
+            "q99": torch.ones(ACTION_DIM),
+        },
         "observation.images.base_0_rgb": {
             "mean": torch.zeros(3, 224, 224),
             "std": torch.ones(3, 224, 224),
