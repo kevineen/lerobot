@@ -107,7 +107,11 @@ def _setup_pi0():
 
     set_seed(42)
     config = PI0Config(
-        max_action_dim=ACTION_DIM, max_state_dim=STATE_DIM, chunk_size=CHUNK_SIZE, dtype="float32"
+        max_action_dim=ACTION_DIM,
+        max_state_dim=STATE_DIM,
+        chunk_size=CHUNK_SIZE,
+        n_action_steps=CHUNK_SIZE,
+        dtype="float32",
     )
     _make_features(config)
     policy = PI0Policy(config)
@@ -211,7 +215,11 @@ def _setup_pi05():
 
     set_seed(42)
     config = PI05Config(
-        max_action_dim=ACTION_DIM, max_state_dim=STATE_DIM, chunk_size=CHUNK_SIZE, dtype="float32"
+        max_action_dim=ACTION_DIM,
+        max_state_dim=STATE_DIM,
+        chunk_size=CHUNK_SIZE,
+        n_action_steps=CHUNK_SIZE,
+        dtype="float32",
     )
     _make_features(config)
     policy = PI05Policy(config)
