@@ -150,9 +150,16 @@ lerobot-frs-steering \
 pytest tests/policies/common/ -q
 
 # GPU: pi0 / pi05 / smolvla でステアリング効果を検証
-# (pi0/pi05 は gated な PaliGemma のため HF トークン + ライセンス承諾が必要)
+# (pi0/pi05 は gated な PaliGemma のため HF トークン + ライセンス承諾が必要。
+#  最初の1実行で PaliGemma 設定がキャッシュされ、以降は HF_HUB_OFFLINE=1 でも実行可)
 hf auth login
-pytest tests/policies/pi0_pi05/test_frs.py -v
+
+# 【重要】必ず1テストずつ実行すること。各テストはフルVLM（fp32で約16GiB VRAM）
+# をGPUに載せるため、失敗テストのVRAMが解放されず、一括実行はOOM連鎖する
+# （RTX 4090/3090の24GBで実証: 一括だと6失敗、1本ずつなら全部合格）
+for t in $(pytest --collect-only -q tests/policies/pi0_pi05/test_frs.py | sed -n 's/^.*:://p'); do
+  pytest "tests/policies/pi0_pi05/test_frs.py::$t" -v
+done
 ```
 
 ## 注意事項
@@ -163,4 +170,11 @@ pytest tests/policies/pi0_pi05/test_frs.py -v
   されるので確認してください。
 - FRSはフロー・マッチング政策専用です（pi0 / pi05 / smolvla）。
   ACT等の決定論的政策や pi0_fast のトークン化政策には適用できません。
+- **pi0.5 の正規化**: pi0.5 は既定で QUANTILES 正規化（q01/q99 統計必須）。
+  データセット統計に q01/q99 がないと ValueError になるため、
+  `augment_dataset_quantile_stats.py` で統計を追加するか
+  `normalization_mapping` を変更してください。
+- **メモリが厳しい場合**: `dtype="bfloat16"` で VRAM 約半減
+  （RTX 3090実測: fp32 15.6GiB → bf16 8.8GiB。ステアリング効果・
+  逆積分の数値は fp32 と同等、アクション出力は fp32 で返る）。
 - 実行前に `lerobot-teleoperate` でアーム・カメラ・キャリブレーションが正常か確認してください。
