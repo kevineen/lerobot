@@ -52,7 +52,7 @@ from lerobot.utils.constants import (
     OBS_STATE,
 )
 
-from ..common.flow_matching import euler_integrate, sample_noise, sample_time_beta
+from ..common.flow_matching import euler_integrate, reverse_integrate, sample_noise, sample_time_beta
 from ..common.vla_utils import (
     clone_past_key_values,
     create_sinusoidal_pos_embedding,
@@ -71,6 +71,8 @@ class ActionSelectKwargs(TypedDict, total=False):
     inference_delay: int | None
     prev_chunk_left_over: Tensor | None
     execution_horizon: int | None
+    reference_actions: Tensor | None
+    num_reverse_steps: int | None
 
 
 def _prepare_trained_rtc_prefix(
@@ -765,35 +767,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         return F.mse_loss(u_t, v_t, reduction="none")
 
-    @torch.no_grad()  # see openpi `sample_actions` (slightly adapted)
-    def sample_actions(
-        self,
-        images,
-        img_masks,
-        tokens,
-        masks,
-        states=None,
-        state_masks=None,
-        noise=None,
-        num_steps=None,
-        **kwargs: Unpack[ActionSelectKwargs],
-    ) -> Tensor:
-        """Do a full inference forward and compute the action."""
-        if num_steps is None:
-            num_steps = self.config.num_inference_steps
-
-        bsize = tokens.shape[0]
-        device = tokens.device
-
-        if noise is None:
-            # Sample noise with padded dimension as expected by action_in_proj
-            actions_shape = (
-                bsize,
-                self.config.chunk_size,
-                self.config.max_action_dim,
-            )  # Use config max_action_dim for internal processing
-            noise = self.sample_noise(actions_shape, device)
-
+    def _prepare_inference_prefix(self, images, img_masks, tokens, masks, states=None, state_masks=None):
+        """Embed the prefix (images + language [+ proprio history]) and compute its
+        key-value cache. Shared by `sample_actions` and `reverse_actions`."""
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images, img_masks, tokens, masks, states, state_masks
         )
@@ -810,6 +786,83 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+        return prefix_pad_masks, past_key_values
+
+    def _make_denoise_fn(self, prefix_pad_masks, past_key_values):
+        def denoise_fn(input_x_t, current_timestep):
+            return self.denoise_step(
+                prefix_pad_masks=prefix_pad_masks,
+                past_key_values=past_key_values,
+                x_t=input_x_t,
+                timestep=current_timestep,
+            )
+
+        return denoise_fn
+
+    def _validate_action_chunk(self, actions: Tensor, name: str) -> Tensor:
+        """Check chunk shape against the policy format and cast to float32."""
+        expected = (self.config.chunk_size, self.config.max_action_dim)
+        if tuple(actions.shape[1:]) != expected:
+            raise ValueError(
+                f"{name} must have shape (batch, {expected[0]}, {expected[1]}), got {tuple(actions.shape)}. "
+                "Normalize the actions and pad/expand the chunk axis (see "
+                "lerobot.policies.common.frs.build_reference_chunk)."
+            )
+        return actions.to(dtype=torch.float32)
+
+    @torch.no_grad()  # see openpi `sample_actions` (slightly adapted)
+    def sample_actions(
+        self,
+        images,
+        img_masks,
+        tokens,
+        masks,
+        states=None,
+        state_masks=None,
+        noise=None,
+        num_steps=None,
+        **kwargs: Unpack[ActionSelectKwargs],
+    ) -> Tensor:
+        """Do a full inference forward and compute the action.
+
+        Flow Reversal Steering (arXiv:2606.13675): pass `reference_actions`
+        (a normalized, padded action chunk) instead of `noise` to steer the
+        policy — the reference is first integrated backwards through the flow
+        (actions -> noise), and the resulting noise is denoised as usual. The
+        output stays in the policy's action distribution while moving toward
+        the reference.
+        """
+        if num_steps is None:
+            num_steps = self.config.num_inference_steps
+
+        reference_actions = kwargs.pop("reference_actions", None)
+        num_reverse_steps = kwargs.pop("num_reverse_steps", None)
+
+        bsize = tokens.shape[0]
+        device = tokens.device
+
+        prefix_pad_masks, past_key_values = self._prepare_inference_prefix(
+            images, img_masks, tokens, masks, states, state_masks
+        )
+
+        denoise_fn = self._make_denoise_fn(prefix_pad_masks, past_key_values)
+
+        if reference_actions is not None:
+            if noise is not None:
+                raise ValueError("Pass either `noise` or `reference_actions`, not both.")
+            reference_actions = self._validate_action_chunk(reference_actions, "reference_actions")
+            if num_reverse_steps is None:
+                num_reverse_steps = self.config.num_inference_steps
+            noise = reverse_integrate(denoise_fn, reference_actions.to(device), num_reverse_steps)
+
+        if noise is None:
+            # Sample noise with padded dimension as expected by action_in_proj
+            actions_shape = (
+                bsize,
+                self.config.chunk_size,
+                self.config.max_action_dim,
+            )  # Use config max_action_dim for internal processing
+            noise = self.sample_noise(actions_shape, device)
 
         rtc_mode = "guided"
         trained_prefix = trained_prefix_mask = None
@@ -830,12 +883,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                 )
 
         return euler_integrate(
-            lambda input_x_t, current_timestep: self.denoise_step(
-                prefix_pad_masks=prefix_pad_masks,
-                past_key_values=past_key_values,
-                x_t=input_x_t,
-                timestep=current_timestep,
-            ),
+            denoise_fn,
             noise,
             num_steps,
             rtc_processor=self.rtc_processor,
@@ -846,6 +894,49 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             hard_prefix=trained_prefix,
             hard_prefix_mask=trained_prefix_mask,
         )
+
+    @torch.no_grad()
+    def reverse_actions(
+        self,
+        images,
+        img_masks,
+        tokens,
+        masks,
+        actions,
+        states=None,
+        state_masks=None,
+        num_steps=None,
+    ) -> Tensor:
+        """Run the flow in reverse: map an action chunk to its noise sample.
+
+        Flow Reversal Steering (arXiv:2606.13675): reverse-Euler integration of
+        the velocity field from t=0 (actions) to t=1 (noise). With finitely many
+        steps (default `config.num_inference_steps`, i.e. 10 steps of h=0.1 in
+        the paper) the recovered noise stays in-distribution; re-denoising it
+        (e.g. via `sample_actions(noise=...)`) projects the input actions onto
+        the policy's action distribution.
+
+        Args:
+            actions: Normalized action chunk of shape
+                `(batch, chunk_size, max_action_dim)` (see
+                `lerobot.policies.common.frs` helpers).
+            num_steps: Number of reverse Euler steps. Defaults to
+                `config.num_inference_steps`.
+
+        Returns:
+            Recovered noise `(batch, chunk_size, max_action_dim)`.
+        """
+        if num_steps is None:
+            num_steps = self.config.num_inference_steps
+
+        actions = self._validate_action_chunk(actions, "actions")
+
+        prefix_pad_masks, past_key_values = self._prepare_inference_prefix(
+            images, img_masks, tokens, masks, states, state_masks
+        )
+        denoise_fn = self._make_denoise_fn(prefix_pad_masks, past_key_values)
+
+        return reverse_integrate(denoise_fn, actions.to(tokens.device), num_steps)
 
     def denoise_step(
         self,

@@ -186,3 +186,6 @@ tmp.jpg
 *.urdf
 *.xml
 *.part
+
+# FRS: keep the small kinematics-only URDF (meshes stripped, 8 KB) despite the *.urdf rule
+!/experiments/frs/assets/so101.urdf

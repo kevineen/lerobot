@@ -25,6 +25,7 @@ import torch
 
 from lerobot.policies.common.flow_matching import (
     euler_integrate,
+    reverse_integrate,
     sample_beta,
     sample_noise,
     sample_time_beta,
@@ -213,3 +214,72 @@ def test_euler_integrate_clamps_trained_rtc_prefix_and_sets_clean_time():
 
     torch.testing.assert_close(out[:, :2], hard_prefix[:, :2])
     assert all(torch.equal(time[:, :2], torch.zeros(1, 2)) for time in seen_times)
+
+
+# --- reverse_integrate (Flow Reversal Steering, arXiv:2606.13675) ---
+
+
+def test_reverse_integrate_constant_velocity_is_exact():
+    # With v_t == c constant, x_1 = x_0 + sum(dt * c) = x_0 + c exactly (num_steps * dt = 1).
+    actions = torch.randn(3, 5, 2)
+    c = torch.randn(3, 5, 2)
+    out = reverse_integrate(lambda x_t, time: c, actions, num_steps=10)
+    torch.testing.assert_close(out, actions + c, rtol=0, atol=1e-6)
+
+
+def test_reverse_integrate_visits_times_zero_to_one_minus_h():
+    seen_times = []
+
+    def denoise_fn(x_t, time_tensor):
+        seen_times.append(time_tensor[0].item())
+        return torch.zeros_like(x_t)
+
+    reverse_integrate(denoise_fn, torch.ones(1, 3, 2), num_steps=4)
+    assert seen_times == [0.0, 0.25, 0.5, 0.75]
+
+
+def test_reverse_integrate_rejects_bad_num_steps():
+    import pytest
+
+    with pytest.raises(ValueError):
+        reverse_integrate(lambda x_t, time: torch.zeros_like(x_t), torch.ones(1, 3, 2), num_steps=0)
+
+
+def test_reverse_integrate_inverts_euler_integrate_for_linear_flow():
+    # True flow-matching velocity field of a linear interpolation: with paired
+    # (noise, actions) endpoints the marginal velocity is the constant
+    # u = noise - actions, so forward and reverse Euler are exact inverses.
+    torch.manual_seed(6)
+    noise = torch.randn(2, 6, 4)
+    actions = torch.randn(2, 6, 4)
+    denoise_fn = lambda x_t, time_tensor: noise - actions  # noqa: E731
+
+    sampled_actions = euler_integrate(denoise_fn, noise, 10)
+    recovered_noise = reverse_integrate(denoise_fn, sampled_actions, 10)
+    torch.testing.assert_close(sampled_actions, actions, rtol=0, atol=1e-5)
+    torch.testing.assert_close(recovered_noise, noise, rtol=0, atol=1e-5)
+
+
+def test_reverse_integrate_round_trip_error_shrinks_with_steps():
+    # Paper's step-count trade-off: for a state-dependent velocity field the
+    # Euler discretization error is O(h) in each direction, so the round trip
+    # actions -> noise -> actions gets closer to the reference as steps grow.
+    torch.manual_seed(7)
+    denoise_fn = _make_denoise_fn()
+    actions = torch.randn(2, 6, 4)
+
+    def round_trip(num_steps):
+        recovered_noise = reverse_integrate(denoise_fn, actions, num_steps)
+        return euler_integrate(denoise_fn, recovered_noise, num_steps)
+
+    err_coarse = (round_trip(3) - actions).abs().max()
+    err_fine = (round_trip(100) - actions).abs().max()
+    assert err_fine < err_coarse
+
+
+def test_reverse_integrate_preserves_shape_dtype_and_device():
+    actions = torch.randn(2, 5, 3, dtype=torch.float64)
+    out = reverse_integrate(lambda x_t, time_tensor: torch.zeros_like(x_t), actions, 5)
+    assert out.shape == actions.shape
+    assert out.dtype == torch.float64
+    assert out.device == actions.device
