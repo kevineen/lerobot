@@ -58,6 +58,56 @@ def sample_time_beta(bsize: int, device, *, alpha: float, beta: float, scale: fl
     return time.to(dtype=torch.float32, device=device)
 
 
+def reverse_integrate(
+    denoise_fn: Callable[[Tensor, Tensor], Tensor],
+    actions: Tensor,
+    num_steps: int,
+) -> Tensor:
+    """Reverse-Euler integration of a velocity field from t=0 (actions) to t=1 (noise).
+
+    This is the flow-reversal operation of Flow Reversal Steering (Tang et al.,
+    "Improving Robotic Generalist Policies via Flow Reversal Steering",
+    arXiv:2606.13675): integrating the learned velocity field backwards through
+    flow-matching time turns an action chunk into the noise sample that the
+    denoising loop would (approximately) map back to it. Re-denoising from that
+    noise projects the input actions onto the policy's action distribution.
+
+    Mirrors :func:`euler_integrate` with the time direction flipped: ``dt = +1/num_steps``,
+    ``time = step * dt``, ``x_t <- x_t + dt * v_t`` for ``step in [0, num_steps)``.
+    With the openpi convention (t=0 clean actions, t=1 noise, target velocity
+    ``u_t = noise - actions``) this walks actions -> noise, exactly inverting the
+    sampling loop in the limit of infinitely many steps. With finitely many steps
+    (the paper uses 10) the integration error is the feature: it keeps the
+    recovered noise in-distribution for the policy.
+
+    Args:
+        denoise_fn: Computes the velocity ``v_t`` from ``(x_t, time_tensor)`` where
+            ``time_tensor`` is a float32 tensor of shape ``(batch_size,)``. The returned
+            velocity must have the same shape and dtype as ``x_t``.
+        actions: Clean action chunk ``x_0`` of shape ``(batch_size, ...)``, already
+            normalized and padded to the policy's action format.
+        num_steps: Number of reverse Euler steps (paper default: 10, i.e. h=0.1).
+
+    Returns:
+        The recovered noise sample ``x_1`` of the same shape as ``actions``.
+    """
+    if num_steps < 1:
+        raise ValueError(f"num_steps must be >= 1, got {num_steps}")
+
+    bsize = actions.shape[0]
+    device = actions.device
+
+    dt = 1.0 / num_steps
+    x_t = actions
+    for step in range(num_steps):
+        time = step * dt
+        time_tensor = torch.tensor(time, dtype=torch.float32, device=device).expand(bsize)
+        v_t = denoise_fn(x_t, time_tensor)
+        x_t = x_t + dt * v_t
+
+    return x_t
+
+
 def euler_integrate(
     denoise_fn: Callable[[Tensor, Tensor], Tensor],
     noise: Tensor,
