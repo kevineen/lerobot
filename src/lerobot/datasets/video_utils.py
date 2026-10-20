@@ -388,7 +388,21 @@ def decode_video_frames_torchcodec(
     metadata = decoder.metadata
     average_fps = metadata.average_fps
     # convert timestamps to frame indices
-    frame_indices = [round(ts * average_fps) for ts in timestamps]
+    raw_indices = [round(ts * average_fps) for ts in timestamps]
+    # A file that ends on a frame boundary makes round(duration * fps) == num_frames.
+    # Streaming encode can also drop a few frames at the tail. Repeat the last real
+    # frame for that short gap; anything farther still goes to get_frames_at and fails.
+    last_index = metadata.num_frames - 1
+    max_tail_frames = 5
+    clamped_tail: list[bool] = []
+    frame_indices: list[int] = []
+    for raw in raw_indices:
+        if last_index < raw <= last_index + max_tail_frames:
+            frame_indices.append(last_index)
+            clamped_tail.append(True)
+        else:
+            frame_indices.append(raw)
+            clamped_tail.append(False)
     # retrieve frames based on indices
     frames_batch = decoder.get_frames_at(indices=frame_indices)
 
@@ -399,7 +413,12 @@ def decode_video_frames_torchcodec(
             logger.info(f"Frame loaded at timestamp={pts:.4f}")
 
     # float64: hour-scale timestamps quantize past tolerance_s in float32.
-    query_ts = torch.tensor(timestamps, dtype=torch.float64)
+    # Clamped tail queries are scored against the frame that was actually decoded.
+    query_for_check = [
+        loaded if clamped else queried
+        for queried, loaded, clamped in zip(timestamps, loaded_ts, clamped_tail, strict=True)
+    ]
+    query_ts = torch.tensor(query_for_check, dtype=torch.float64)
     loaded_ts = torch.tensor(loaded_ts, dtype=torch.float64)
 
     # compute distances between each query timestamp and loaded timestamps
