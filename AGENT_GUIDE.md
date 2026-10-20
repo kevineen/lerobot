@@ -262,6 +262,20 @@ All policies typically train for **5–10 epochs** (see §7).
 - **80 GB (A100/H100):** → any, with healthy batch. `pi05`, `xvla`, `wall_x` become comfortable.
 - **CPU only:** → don't train here. Use Google Colab (see [`docs/source/notebooks.mdx`](./docs/source/notebooks.mdx)) or a rented GPU.
 
+### 6.3 Optional: swap ACT's vision encoder (DINOv2 / DINOv3 / timm)
+
+`act` defaults to an ImageNet-pretrained ResNet18. For stronger visual features, point
+`--policy.vision_backbone` at a Hugging Face model or a `timm:` model — details, options
+(`freeze_vision_backbone`, weight sources) and caveats: [ACT README](./docs/source/policy_act_README.md).
+
+```bash
+lerobot-train ... --policy.type=act --policy.vision_backbone=facebook/dinov2-base
+# add --policy.freeze_vision_backbone=true to train the transformer + head only
+```
+
+Caveats: ViT backbones produce far more encoder tokens than a ResNet (slower steps, more GPU
+memory), and `facebook/dinov3-*` is a gated repo (accept the license, then `huggingface-cli login`).
+
 ---
 
 ## 7. How long should I train?

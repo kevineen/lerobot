@@ -53,11 +53,23 @@ class ACTConfig(PreTrainedConfig):
             the output data name, and the value is PolicyFeature, which consists of FeatureType and shape attributes.
         normalization_mapping: A dictionary that maps from a str value of FeatureType (e.g., "STATE", "VISUAL") to
             a corresponding NormalizationMode (e.g., NormalizationMode.MIN_MAX)
-        vision_backbone: Name of the torchvision resnet backbone to use for encoding images.
-        pretrained_backbone_weights: Pretrained weights from torchvision to initialize the backbone.
-            `None` means no pretrained weights.
+        vision_backbone: Vision backbone used to encode images. Supported forms:
+            - "resnet18", "resnet50", ...: torchvision ResNet variants (default).
+            - A Hugging Face model id or local path (requires `transformers`), e.g.
+              "facebook/dinov2-base" (DINOv2) or "facebook/dinov3-vitb16-pretrain-lvd1689m" (DINOv3,
+              a gated repo requiring a HF token and license acceptance).
+            - "timm:<model_name>" (requires `timm`), e.g. "timm:vit_base_patch14_dinov2.lvd142m".
+        pretrained_backbone_weights: Pretrained weights used to initialize the backbone.
+            - For torchvision backbones: a torchvision weights enum name; `None` means no pretrained
+              weights.
+            - For Hugging Face / timm backbones: a model id or pretrained tag to load the weights
+              from; `None` (or "random") builds the architecture with random weights. A torchvision
+              weights enum name (e.g. the default "ResNet18_Weights.IMAGENET1K_V1") is ignored for
+              these backbones and weights are loaded from `vision_backbone` itself.
+        freeze_vision_backbone: Whether to keep the vision backbone frozen during training (its
+            parameters are excluded from the optimizer and it is kept in eval mode).
         replace_final_stride_with_dilation: Whether to replace the ResNet's final 2x2 stride with a dilated
-            convolution.
+            convolution (torchvision ResNet backbones only).
         pre_norm: Whether to use "pre-norm" in the transformer blocks.
         dim_model: The transformer blocks' main hidden dimension.
         n_heads: The number of heads to use in the transformer blocks' multi-head attention.
@@ -97,6 +109,7 @@ class ACTConfig(PreTrainedConfig):
     # Vision backbone.
     vision_backbone: str = "resnet18"
     pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
+    freeze_vision_backbone: bool = False
     replace_final_stride_with_dilation: int = False
     # Transformer layers.
     pre_norm: bool = False
@@ -131,10 +144,8 @@ class ACTConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
-        if not self.vision_backbone.startswith("resnet"):
-            raise ValueError(
-                f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
-            )
+        # Note: `vision_backbone` is validated when the backbone is built (see
+        # `lerobot.policies.common.vision_backbones.build_vision_backbone`).
         if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
             raise NotImplementedError(
                 "`n_action_steps` must be 1 when using temporal ensembling. This is "

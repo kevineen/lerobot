@@ -28,13 +28,11 @@ import einops
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
-import torchvision
 from torch import Tensor, nn
-from torchvision.models._utils import IntermediateLayerGetter
-from torchvision.ops.misc import FrozenBatchNorm2d
 
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
+from ..common.vision_backbones import build_vision_backbone
 from ..pretrained import PreTrainedPolicy
 from .configuration_act import ACTConfig
 
@@ -323,17 +321,15 @@ class ACT(nn.Module):
                 create_sinusoidal_pos_embedding(num_input_token_encoder, config.dim_model).unsqueeze(0),
             )
 
-        # Backbone for image feature extraction.
+        # Backbone for image feature extraction. Returns a (B, C, H, W) feature map.
         if self.config.image_features:
-            backbone_model = getattr(torchvision.models, config.vision_backbone)(
-                replace_stride_with_dilation=[False, False, config.replace_final_stride_with_dilation],
-                weights=config.pretrained_backbone_weights,
-                norm_layer=FrozenBatchNorm2d,
+            self.backbone = build_vision_backbone(
+                vision_backbone=config.vision_backbone,
+                pretrained_backbone_weights=config.pretrained_backbone_weights,
+                replace_final_stride_with_dilation=config.replace_final_stride_with_dilation,
             )
-            # Note: The assumption here is that we are using a ResNet model (and hence layer4 is the final
-            # feature map).
-            # Note: The forward method of this returns a dict: {"feature_map": output}.
-            self.backbone = IntermediateLayerGetter(backbone_model, return_layers={"layer4": "feature_map"})
+            if config.freeze_vision_backbone:
+                self.backbone.requires_grad_(False)
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
@@ -352,7 +348,7 @@ class ACT(nn.Module):
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
             self.encoder_img_feat_input_proj = nn.Conv2d(
-                backbone_model.fc.in_features, config.dim_model, kernel_size=1
+                self.backbone.feature_channels, config.dim_model, kernel_size=1
             )
         # Transformer encoder positional embeddings.
         n_1d_tokens = 1  # for the latent
@@ -470,11 +466,14 @@ class ACT(nn.Module):
             encoder_in_tokens.append(self.encoder_env_state_input_proj(batch[OBS_ENV_STATE]))
 
         if self.config.image_features:
+            if self.config.freeze_vision_backbone:
+                # Keep a frozen backbone in eval mode (e.g. to disable dropout and stochastic depth).
+                self.backbone.eval()
             # For a list of images, the H and W may vary but H*W is constant.
             # NOTE: If modifying this section, verify on MPS devices that
             # gradients remain stable (no explosions or NaNs).
             for img in batch[OBS_IMAGES]:
-                cam_features = self.backbone(img)["feature_map"]
+                cam_features = self.backbone(img)
                 cam_pos_embed = self.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
                 cam_features = self.encoder_img_feat_input_proj(cam_features)
 
