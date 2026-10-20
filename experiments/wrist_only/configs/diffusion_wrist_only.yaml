@@ -1,0 +1,23 @@
+dataset:
+  repo_id: local/so101_singlearm_pickup_cobra_20261018_205119_curated
+  root: /home/kevin/.cache/huggingface/lerobot/local/so101_singlearm_pickup_cobra_20261018_205119_curated
+  video_backend: torchcodec
+
+policy:
+  type: diffusion
+  push_to_hub: false
+  input_features:
+    observation.state:
+      type: STATE
+      shape: [6]
+    observation.images.wrist:
+      type: VISUAL
+      shape: [3, 480, 640]
+
+steps: 32158
+batch_size: 8
+num_workers: 4
+output_dir: /home/kevin/robot/lerobot/outputs/train/diffusion_so101_cobra_curated_wrist_only_20261020
+
+wandb:
+  enable: false
