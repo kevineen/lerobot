@@ -52,6 +52,15 @@ class SOFollowerConfig:
     # failure, so the steady-state read cost is unchanged.
     num_read_retries: int = 2
 
+    # Read `Present_Load` (STS3215 estimated load, signed, ~0.1% units, read-only register)
+    # from every motor in each observation and expose it as `{motor}.load` scalars.
+    # The dataset pipeline consolidates scalars into `observation.state` (positions
+    # first, loads after), so policies consume this grasp/contact force-proxy channel
+    # with no code changes. Costs one extra bus sync-read per frame (~1ms class).
+    # It grows `observation.state` by the motor count while True — keep False
+    # (default) for backward compatibility with 6-dim datasets/checkpoints.
+    read_present_load: bool = False
+
 
 @RobotConfig.register_subclass("so101_follower")
 @RobotConfig.register_subclass("so100_follower")

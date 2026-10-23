@@ -64,7 +64,12 @@ class SOFollower(Robot):
 
     @property
     def _motors_ft(self) -> dict[str, type]:
-        return {f"{motor}.pos": float for motor in self.bus.motors}
+        fts: dict[str, type] = {f"{motor}.pos": float for motor in self.bus.motors}
+        if self.config.read_present_load:
+            # `observation.state` への統合は「位置の後に負荷」の順（スカラーは
+            # 辞書順で連結される）。順序はチェックポイント互換性の一部。
+            fts.update({f"{motor}.load": float for motor in self.bus.motors})
+        return fts
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
@@ -184,6 +189,14 @@ class SOFollower(Robot):
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
+
+        # Read motor load (grasp/contact force proxy for force-aware IL)
+        if self.config.read_present_load:
+            start = time.perf_counter()
+            loads = self.bus.sync_read("Present_Load", num_retry=self.config.num_read_retries)
+            obs_dict.update({f"{motor}.load": val for motor, val in loads.items()})
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read load: {dt_ms:.1f}ms")
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
