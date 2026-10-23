@@ -133,6 +133,8 @@ lerobot-record \
   --display_data=true
 ```
 
+> **Force-aware recording (optional)**: add `--robot.so101_follower.read_present_load=true` to also record the STS3215 load estimate (`Present_Load`) of every motor each frame. It appends 6 `{motor}.load` scalars to `observation.state` (6→12 dims; positions first, loads after), so ACT/Diffusion/SmolVLA consume the grasp/contact force proxy with **no code changes**. Costs one extra bus read per frame (~ms). Keep it off when a dataset must match existing 6-dim checkpoints. Workflow & A/B comparison: `so101-lab/docs/learn/06_force_obs/` (VFA-lite).
+
 **4.7 Visualize** — **always** do this before training. Look for missing frames, camera blur, unreachable targets, inconsistent object positions.
 After upload: https://huggingface.co/spaces/lerobot/visualize_dataset → paste `${HF_USER}/my_task`. Works for **any LeRobot-formatted Hub dataset** — use it to scout other datasets, inspect episode quality, or debug your own data before retraining.
 
