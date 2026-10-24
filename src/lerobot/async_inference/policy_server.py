@@ -261,7 +261,7 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
             return services_pb2.Empty()
 
         except Exception as e:
-            self.logger.error(f"Error in StreamActions: {e}")
+            self.logger.error(f"Error in StreamActions: {type(e).__name__}: {e}", exc_info=True)
 
             return services_pb2.Empty()
 
@@ -321,7 +321,25 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
     def _get_action_chunk(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
         """Get an action chunk from the policy. The chunk contains only"""
-        chunk = self.policy.predict_action_chunk(observation)
+        # Diffusion (n_obs_steps>1) needs a temporal observation queue. Calling
+        # predict_action_chunk on a single frame asserts with an empty message.
+        # Mirror DiffusionPolicy.select_action: stack images, populate queues,
+        # then predict a full action chunk.
+        n_obs_steps = getattr(self.policy.config, "n_obs_steps", 1)
+        if n_obs_steps > 1 and hasattr(self.policy, "_queues"):
+            from lerobot.policies.utils import populate_queues
+            from lerobot.utils.constants import ACTION, OBS_IMAGES
+
+            batch = {k: v for k, v in observation.items() if v is not None and torch.is_tensor(v)}
+            if getattr(self.policy.config, "image_features", None):
+                batch[OBS_IMAGES] = torch.stack(
+                    [batch[key] for key in self.policy.config.image_features], dim=-4
+                )
+            self.policy._queues = populate_queues(self.policy._queues, batch)
+            self.policy._queues[ACTION].clear()
+            chunk = self.policy.predict_action_chunk(batch)
+        else:
+            chunk = self.policy.predict_action_chunk(observation)
         if chunk.ndim != 3:
             chunk = chunk.unsqueeze(0)  # adding batch dimension, now shape is (B, chunk_size, action_dim)
 

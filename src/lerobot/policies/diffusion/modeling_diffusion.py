@@ -177,13 +177,18 @@ def _make_noise_scheduler(name: str, **kwargs: dict):
     """
     Factory for noise scheduler instances of the requested type. All kwargs are passed
     to the scheduler.
+
+    Import schedulers lazily so a long-lived policy_server that started before
+    ``diffusers`` was installed does not keep ``DDPMScheduler = None``.
     """
     require_package("diffusers", extra="diffusion")
+    from diffusers.schedulers.scheduling_ddim import DDIMScheduler as _DDIMScheduler
+    from diffusers.schedulers.scheduling_ddpm import DDPMScheduler as _DDPMScheduler
 
     if name == "DDPM":
-        return DDPMScheduler(**kwargs)
+        return _DDPMScheduler(**kwargs)
     elif name == "DDIM":
-        return DDIMScheduler(**kwargs)
+        return _DDIMScheduler(**kwargs)
     else:
         raise ValueError(f"Unsupported noise scheduler type {name}")
 
